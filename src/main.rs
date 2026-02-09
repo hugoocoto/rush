@@ -1,6 +1,8 @@
 use std::{
     collections::HashMap,
+    env::{current_dir, set_current_dir},
     io::{Write, stderr, stdin, stdout},
+    path::Path,
     process::Command,
 };
 
@@ -69,14 +71,21 @@ fn run(input: String, builtins: &HashMap<String, Box<Builtin>>) {
     }
 }
 
-fn hello(_command: Vec<String>) {
-    assert!(_command[0] == "hello");
+fn hello(command: Vec<String>) {
+    assert!(command[0] == "hello");
     println!("Hello, World!");
+}
+
+fn cd(command: Vec<String>) {
+    assert!(command[0] == "cd");
+    let p = current_dir();
+    set_current_dir(Path::join(Path::new(&p.unwrap()), Path::new(&command[1]))).expect("");
 }
 
 pub fn main() {
     let mut builtin_table: HashMap<String, Box<Builtin>> = HashMap::new();
     builtin_table.insert(String::from("hello"), Box::new(hello));
+    builtin_table.insert(String::from("cd"), Box::new(cd));
 
     loop {
         let mut input = String::new();
