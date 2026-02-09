@@ -10,20 +10,16 @@ const PROMPT: &str = ">> ";
 fn exec(input: Vec<String>) {
     if let Some(e) = input.get(0) {
         let arguments = &input[1..];
-        for a in arguments {
-            print!("({a})");
+        if let Ok(command) = Command::new(e).args(arguments).output() {
+            stdout()
+                .write_all(&command.stdout)
+                .expect("Can't write to stdout");
+            stderr()
+                .write_all(&command.stderr)
+                .expect("Can't write to stderr");
+        } else {
+            eprintln!("Command `{}` not found", input.get(0).unwrap());
         }
-        println!("");
-        let command = Command::new(e)
-            .args(arguments)
-            .output()
-            .expect("Can't create command");
-        stdout()
-            .write_all(&command.stdout)
-            .expect("Can't write to stdout");
-        stderr()
-            .write_all(&command.stderr)
-            .expect("Can't write to stderr");
     }
 }
 
