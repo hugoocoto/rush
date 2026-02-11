@@ -1,7 +1,10 @@
+use core::time;
+use std::fs::File;
+use std::io::{Read, Write, stderr, stdout};
+use std::thread::sleep;
 use std::{
     collections::HashMap,
     env::{current_dir, set_current_dir},
-    io::{Write, stderr, stdin, stdout},
     path::Path,
     process::Command,
 };
@@ -82,16 +85,110 @@ fn cd(command: Vec<String>) {
     set_current_dir(Path::join(Path::new(&p.unwrap()), Path::new(&command[1]))).expect("");
 }
 
+pub fn enable_raw_mode() {
+    Command::new("stty")
+        .arg("raw")
+        .arg("-echo")
+        .status()
+        .unwrap();
+}
+
+pub fn disable_raw_mode() {
+    Command::new("stty").arg("sane").status().unwrap();
+}
+
 pub fn main() {
     let mut builtin_table: HashMap<String, Box<Builtin>> = HashMap::new();
     builtin_table.insert(String::from("hello"), Box::new(hello));
     builtin_table.insert(String::from("cd"), Box::new(cd));
 
-    loop {
+    let mut rawin = File::open("/dev/stdin").unwrap();
+    'mainloop: loop {
         let mut input = String::new();
         print!("{PROMPT}");
         stdout().flush().unwrap();
-        stdin().read_line(&mut input).unwrap();
-        run(input, &builtin_table);
+        enable_raw_mode();
+        loop {
+            let ch: &mut [u8] = &mut [0];
+            if let Ok(n) = rawin.read(ch) {
+                if n == 0 {
+                    sleep(time::Duration::from_millis(200));
+                    continue;
+                }
+            }
+
+            let ch = *ch.get(0).unwrap() as char;
+
+            match ch {
+                case if ch == 0x03 as char => {
+                    // C-c
+                    disable_raw_mode();
+                    break 'mainloop;
+                }
+
+                case if ch == 0x0D as char => {
+                    // CR (enter)
+                    print!("\r\n");
+                    stdout().flush().unwrap();
+                    break;
+                }
+
+                case if ch == 0x08 as char || ch == 127 as char => {
+                    // BS
+                    print!("{}[D {}[D", 27 as char, 27 as char);
+                    input.pop();
+                    stdout().flush().unwrap();
+                    continue;
+                }
+
+                case if ch == 0x09 as char => {
+                    // TAB
+                    print!("\n\r{PROMPT}{input}");
+                    stdout().flush().unwrap();
+                    continue;
+                }
+
+                case if ch == 0x20 as char => print!("SP( )"),
+                case if ch == 0x00 as char => print!("NUL"),
+                case if ch == 0x01 as char => print!("SOH"),
+                case if ch == 0x02 as char => print!("STX"),
+                case if ch == 0x04 as char => print!("EOT"),
+                case if ch == 0x05 as char => print!("ENQ"),
+                case if ch == 0x06 as char => print!("ACK"),
+                case if ch == 0x07 as char => print!("BEL"),
+                case if ch == 0x0A as char => print!("LF"),
+                case if ch == 0x0B as char => print!("VT"),
+                case if ch == 0x0C as char => print!("FF"),
+                case if ch == 0x0E as char => print!("SO"),
+                case if ch == 0x0F as char => print!("SI"),
+                case if ch == 0x10 as char => print!("DLE"),
+                case if ch == 0x11 as char => print!("DC1"),
+                case if ch == 0x12 as char => print!("DC2"),
+                case if ch == 0x13 as char => print!("DC3"),
+                case if ch == 0x14 as char => print!("DC4"),
+                case if ch == 0x15 as char => print!("NAK"),
+                case if ch == 0x16 as char => print!("SYN"),
+                case if ch == 0x17 as char => print!("ETB"),
+                case if ch == 0x18 as char => print!("CAN"),
+                case if ch == 0x19 as char => print!("EM"),
+                case if ch == 0x1A as char => print!("SUB"),
+                case if ch == 0x1B as char => print!("ESC"),
+                case if ch == 0x1C as char => print!("FS"),
+                case if ch == 0x1D as char => print!("GS"),
+                case if ch == 0x1E as char => print!("RS"),
+                case if ch == 0x1F as char => print!("US"),
+                _ => {
+                    print!("{ch}");
+                    input.push(ch);
+                }
+            }
+            stdout().flush().unwrap();
+        }
+
+        disable_raw_mode();
+
+        if !input.is_empty() {
+            run(input, &builtin_table);
+        }
     }
 }
