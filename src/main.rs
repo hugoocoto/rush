@@ -3,6 +3,7 @@ use std::{
     collections::{HashMap, HashSet},
     env,
     env::{current_dir, set_current_dir},
+    fs,
     fs::File,
     io::{Read, Write, stderr, stdout},
     os::unix::fs::PermissionsExt,
@@ -105,26 +106,45 @@ fn disable_raw_mode() {
 }
 
 fn suggest_argument_or_path(s: &str) -> String {
-    print!("Suggest argument or path from `{s}`\r\n");
-    String::new()
+    if let Ok(read_dir) = fs::read_dir(Path::new(".")) {
+        let matches: Vec<String> = read_dir
+            .filter_map(|entry| entry.ok().and_then(|e| e.file_name().into_string().ok()))
+            .filter(|name| name.starts_with(s))
+            .collect();
+
+        match matches.len() {
+            0 => String::new(),
+            1 => {
+                let mut completion = String::from(&matches[0][s.len()..]);
+                completion.push(' ');
+                completion
+            }
+            _ => {
+                for match_name in matches {
+                    print!("{}\r\n", match_name);
+                }
+                String::new()
+            }
+        }
+    } else {
+        String::new()
+    }
 }
 
 fn suggest_command_name(s: &str, com: &HashSet<String>) -> String {
-    let suggestions = com.iter().filter(|c| c.starts_with(s));
-    if suggestions.peekable().peek().is_none() {
-        return String::new();
-    }
     let matches: Vec<&String> = com.iter().filter(|c| c.starts_with(s)).collect();
+
     match matches.len() {
         0 => String::new(),
         1 => {
-            let mut s = String::from(&matches[0][s.len()..]);
-            s.push_str(" ");
-            s
+            let full_match = matches[0];
+            let mut suffix = String::from(&full_match[s.len()..]);
+            suffix.push(' ');
+            suffix
         }
         _ => {
-            for s in matches {
-                print!("{}\r\n", s);
+            for match_name in matches {
+                print!("{}\r\n", match_name);
             }
             String::new()
         }
