@@ -1,12 +1,14 @@
 use core::time;
-use std::fs::File;
-use std::io::{Read, Write, stderr, stdout};
-use std::thread::sleep;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
+    env,
     env::{current_dir, set_current_dir},
-    path::Path,
+    fs::File,
+    io::{Read, Write, stderr, stdout},
+    os::unix::fs::PermissionsExt,
+    path::{Path, PathBuf},
     process::Command,
+    thread::sleep,
 };
 
 type Builtin = dyn Fn(Vec<String>) -> ();
@@ -53,8 +55,13 @@ fn parse(input: String) -> Vec<String> {
             break;
         }
     }
+
     if start < input.len() {
         arr.push(String::from(input.get(start..).unwrap()));
+    }
+
+    if input.ends_with(" ") {
+        arr.push(String::from(""));
     }
 
     return arr;
@@ -85,7 +92,7 @@ fn cd(command: Vec<String>) {
     set_current_dir(Path::join(Path::new(&p.unwrap()), Path::new(&command[1]))).expect("");
 }
 
-pub fn enable_raw_mode() {
+fn enable_raw_mode() {
     Command::new("stty")
         .arg("raw")
         .arg("-echo")
@@ -93,14 +100,79 @@ pub fn enable_raw_mode() {
         .unwrap();
 }
 
-pub fn disable_raw_mode() {
+fn disable_raw_mode() {
     Command::new("stty").arg("sane").status().unwrap();
 }
 
+fn suggest_argument_or_path(s: &str) -> String {
+    print!("Suggest argument or path from `{s}`\r\n");
+    String::new()
+}
+
+fn suggest_command_name(s: &str, com: &HashSet<String>) -> String {
+    let suggestions = com.iter().filter(|c| c.starts_with(s));
+    if suggestions.peekable().peek().is_none() {
+        return String::new();
+    }
+    let matches: Vec<&String> = com.iter().filter(|c| c.starts_with(s)).collect();
+    match matches.len() {
+        0 => String::new(),
+        1 => {
+            let mut s = String::from(&matches[0][s.len()..]);
+            s.push_str(" ");
+            s
+        }
+        _ => {
+            for s in matches {
+                print!("{}\r\n", s);
+            }
+            String::new()
+        }
+    }
+}
+
+fn suggest(s: String, c: &HashSet<String>) -> String {
+    let args = parse(s.clone());
+    match args.len() {
+        0 => String::new(),
+        1 => suggest_command_name(&args[0][..], c), // todo: suggest path if starting with ./
+        _ => suggest_argument_or_path(args.get(args.len() - 1).unwrap()),
+    }
+}
+
+fn append_commands_from_path(p: PathBuf, shell_commands: &mut HashSet<String>) {
+    if let Ok(dir) = p.read_dir() {
+        for entry in dir {
+            if let Ok(entry) = entry {
+                if let Ok(metadata) = entry.metadata() {
+                    let permissions = metadata.permissions();
+                    if metadata.is_file() && permissions.mode() & 0o111 != 0 {
+                        shell_commands.insert(entry.file_name().into_string().unwrap());
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn preload_commands(shell_commands: &mut HashSet<String>) {
+    match env::var_os("PATH") {
+        Some(paths) => {
+            for path in env::split_paths(&paths) {
+                append_commands_from_path(path, shell_commands);
+            }
+        }
+        None => println!("PATH is not defined in the environment."),
+    }
+}
+
 pub fn main() {
-    let mut builtin_table: HashMap<String, Box<Builtin>> = HashMap::new();
+    let mut builtin_table = HashMap::<String, Box<Builtin>>::new();
+    let mut shell_commands = HashSet::new();
+
     builtin_table.insert(String::from("hello"), Box::new(hello));
     builtin_table.insert(String::from("cd"), Box::new(cd));
+    preload_commands(&mut shell_commands);
 
     let mut rawin = File::open("/dev/stdin").unwrap();
     'mainloop: loop {
@@ -135,6 +207,9 @@ pub fn main() {
 
                 case if ch == 0x08 as char || ch == 127 as char => {
                     // BS
+                    if input.len() <= 0 {
+                        continue;
+                    }
                     print!("{}[D {}[D", 27 as char, 27 as char);
                     input.pop();
                     stdout().flush().unwrap();
@@ -143,12 +218,13 @@ pub fn main() {
 
                 case if ch == 0x09 as char => {
                     // TAB
-                    print!("\n\r{PROMPT}{input}");
+                    print!("\n\r");
+                    input.push_str(&suggest(input.clone(), &shell_commands)[..]);
+                    print!("{PROMPT}{input}");
                     stdout().flush().unwrap();
                     continue;
                 }
 
-                case if ch == 0x20 as char => print!("SP( )"),
                 case if ch == 0x00 as char => print!("NUL"),
                 case if ch == 0x01 as char => print!("SOH"),
                 case if ch == 0x02 as char => print!("STX"),
