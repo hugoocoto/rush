@@ -1,7 +1,7 @@
 use core::time;
 use std::{
     collections::{HashMap, HashSet},
-    env::{self, current_dir, set_current_dir},
+    env::{self},
     fs::{self},
     io::{Read, Write, stdin, stdout},
     os::unix::fs::PermissionsExt,
@@ -14,12 +14,16 @@ type Builtin = dyn Fn(Vec<String>) -> ();
 const PROMPT: &str = ">> ";
 
 fn exec(input: Vec<String>) {
-    if let Some(e) = input.get(0) {
-        let arguments = &input[1..];
-        let status = Command::new(e).args(arguments).status();
-        if status.is_err() {
-            eprintln!("Command `{}` not found", input.get(0).unwrap());
-        }
+    // if let Some(e) = input.get(0) {
+    //     let arguments = &input[1..];
+    //     let status = Command::new(e).args(arguments).status();
+    //     if status.is_err() {
+    //         eprintln!("Command `{}` not found", input.get(0).unwrap());
+    //     }
+    // }
+    let status = Command::new("sh").arg("-c").arg(input.join(" ")).status();
+    if status.is_err() {
+        eprintln!("Command `{}` not found", input.get(0).unwrap());
     }
 }
 
@@ -232,12 +236,19 @@ fn hello(command: Vec<String>) {
 }
 
 fn cd(command: Vec<String>) {
-    assert!(command[0] == "cd");
-    set_current_dir(Path::join(
-        Path::new(&current_dir().unwrap()),
-        Path::new(&command[1]),
-    ))
-    .unwrap_or_else(|e| print!("{}: {e}\r\n", command.join(" ")));
+    if command.len() < 2 {
+        return;
+    }
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(format!("echo {}", command[1]))
+        .output()
+        .expect("Can not run cd argument command");
+
+    let dir_name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let current = env::current_dir().unwrap();
+    let final_path = current.join(dir_name);
+    env::set_current_dir(final_path).unwrap();
 }
 
 pub fn main() {
