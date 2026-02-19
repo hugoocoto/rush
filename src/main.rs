@@ -1,11 +1,9 @@
 use core::time;
 use std::{
     collections::{HashMap, HashSet},
-    env,
-    env::{current_dir, set_current_dir},
-    fs,
-    fs::File,
-    io::{Read, Write, stderr, stdout},
+    env::{self, current_dir, set_current_dir},
+    fs::{self},
+    io::{Read, Write, stdin, stdout},
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::Command,
@@ -18,14 +16,8 @@ const PROMPT: &str = ">> ";
 fn exec(input: Vec<String>) {
     if let Some(e) = input.get(0) {
         let arguments = &input[1..];
-        if let Ok(command) = Command::new(e).args(arguments).output() {
-            stdout()
-                .write_all(&command.stdout)
-                .expect("Can't write to stdout");
-            stderr()
-                .write_all(&command.stderr)
-                .expect("Can't write to stderr");
-        } else {
+        let status = Command::new(e).args(arguments).status();
+        if status.is_err() {
             eprintln!("Command `{}` not found", input.get(0).unwrap());
         }
     }
@@ -82,17 +74,6 @@ fn run(input: String, builtins: &HashMap<String, Box<Builtin>>) {
     }
 }
 
-fn hello(command: Vec<String>) {
-    assert!(command[0] == "hello");
-    println!("Hello, World!");
-}
-
-fn cd(command: Vec<String>) {
-    assert!(command[0] == "cd");
-    let p = current_dir();
-    set_current_dir(Path::join(Path::new(&p.unwrap()), Path::new(&command[1]))).expect("");
-}
-
 fn enable_raw_mode() {
     Command::new("stty")
         .arg("raw")
@@ -106,47 +87,106 @@ fn disable_raw_mode() {
 }
 
 fn suggest_argument_or_path(s: &str) -> String {
-    if let Ok(read_dir) = fs::read_dir(Path::new(".")) {
+    if s.starts_with("-") {
+        String::new()
+    } else {
+        suggest_path(s)
+    }
+}
+
+fn suggest_path(s: &str) -> String {
+    let p = Path::new(s);
+    let dir = if p.is_dir() {
+        p
+    } else {
+        p.parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+    };
+    let prefix = if p.is_dir() {
+        ""
+    } else {
+        p.file_name()
+            .and_then(|os_str| os_str.to_str())
+            .unwrap_or("")
+    };
+
+    if let Ok(read_dir) = fs::read_dir(dir) {
         let matches: Vec<String> = read_dir
-            .filter_map(|entry| entry.ok().and_then(|e| e.file_name().into_string().ok()))
-            .filter(|name| name.starts_with(s))
+            .filter_map(|entry| {
+                let name = entry.ok()?.file_name();
+                let name_str = name.to_str()?;
+                if name_str.starts_with(prefix) {
+                    Some(name_str.to_string())
+                } else {
+                    None
+                }
+            })
             .collect();
 
         match matches.len() {
             0 => String::new(),
             1 => {
-                let mut completion = String::from(&matches[0][s.len()..]);
-                completion.push(' ');
-                completion
+                let completion = &matches[0][prefix.len()..];
+                if dir.join(matches[0].clone()).is_dir() {
+                    format!("{}/", completion)
+                } else {
+                    format!("{} ", completion)
+                }
             }
             _ => {
-                for match_name in matches {
+                for match_name in &matches {
                     print!("{}\r\n", match_name);
                 }
-                String::new()
+                String::from(&lcp(matches.iter().collect())[prefix.len()..])
             }
         }
     } else {
+        print!("Error reading dir {}\r\n", dir.display());
         String::new()
     }
 }
 
-fn suggest_command_name(s: &str, com: &HashSet<String>) -> String {
-    let matches: Vec<&String> = com.iter().filter(|c| c.starts_with(s)).collect();
+fn suggest_command_or_path(s: &str, com: &HashSet<String>) -> String {
+    if s.starts_with("./") {
+        suggest_path(s)
+    } else {
+        suggest_command(s, com)
+    }
+}
 
+fn lcp(mut strs: Vec<&String>) -> String {
+    if strs.is_empty() {
+        return String::new();
+    }
+    strs.sort();
+
+    let first = &strs[0];
+    let last = &strs[strs.len() - 1];
+
+    first
+        .chars()
+        .zip(last.chars())
+        .take_while(|(a, b)| a == b)
+        .map(|(a, _)| a)
+        .collect()
+}
+
+fn suggest_command(s: &str, com: &HashSet<String>) -> String {
+    let matches: Vec<&String> = com.iter().filter(|c| c.starts_with(s)).collect();
     match matches.len() {
         0 => String::new(),
         1 => {
-            let full_match = matches[0];
-            let mut suffix = String::from(&full_match[s.len()..]);
+            let mut suffix = String::from(&matches[0][s.len()..]);
             suffix.push(' ');
             suffix
         }
         _ => {
-            for match_name in matches {
-                print!("{}\r\n", match_name);
-            }
-            String::new()
+            matches
+                .clone()
+                .into_iter()
+                .for_each(|x| print!("{}\r\n", x));
+            String::from(&lcp(matches)[s.len()..])
         }
     }
 }
@@ -155,12 +195,12 @@ fn suggest(s: String, c: &HashSet<String>) -> String {
     let args = parse(s.clone());
     match args.len() {
         0 => String::new(),
-        1 => suggest_command_name(&args[0][..], c), // todo: suggest path if starting with ./
+        1 => suggest_command_or_path(&args[0][..], c), // todo: suggest path if starting with ./
         _ => suggest_argument_or_path(args.get(args.len() - 1).unwrap()),
     }
 }
 
-fn append_commands_from_path(p: PathBuf, shell_commands: &mut HashSet<String>) {
+fn load_commands_from_path(p: PathBuf, shell_commands: &mut HashSet<String>) {
     if let Ok(dir) = p.read_dir() {
         for entry in dir {
             if let Ok(entry) = entry {
@@ -175,15 +215,29 @@ fn append_commands_from_path(p: PathBuf, shell_commands: &mut HashSet<String>) {
     }
 }
 
-fn preload_commands(shell_commands: &mut HashSet<String>) {
+fn load_commands(shell_commands: &mut HashSet<String>) {
     match env::var_os("PATH") {
         Some(paths) => {
             for path in env::split_paths(&paths) {
-                append_commands_from_path(path, shell_commands);
+                load_commands_from_path(path, shell_commands);
             }
         }
         None => println!("PATH is not defined in the environment."),
     }
+}
+
+fn hello(command: Vec<String>) {
+    assert!(command[0] == "hello");
+    println!("Hello, World!");
+}
+
+fn cd(command: Vec<String>) {
+    assert!(command[0] == "cd");
+    set_current_dir(Path::join(
+        Path::new(&current_dir().unwrap()),
+        Path::new(&command[1]),
+    ))
+    .unwrap_or_else(|e| print!("{}: {e}\r\n", command.join(" ")));
 }
 
 pub fn main() {
@@ -192,9 +246,8 @@ pub fn main() {
 
     builtin_table.insert(String::from("hello"), Box::new(hello));
     builtin_table.insert(String::from("cd"), Box::new(cd));
-    preload_commands(&mut shell_commands);
+    load_commands(&mut shell_commands);
 
-    let mut rawin = File::open("/dev/stdin").unwrap();
     'mainloop: loop {
         let mut input = String::new();
         print!("{PROMPT}");
@@ -202,7 +255,7 @@ pub fn main() {
         enable_raw_mode();
         loop {
             let ch: &mut [u8] = &mut [0];
-            if let Ok(n) = rawin.read(ch) {
+            if let Ok(n) = stdin().read(ch) {
                 if n == 0 {
                     sleep(time::Duration::from_millis(200));
                     continue;
